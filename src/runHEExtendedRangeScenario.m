@@ -9,6 +9,7 @@ function [txSUWaveform, txExtSUWaveform, info] = ...
     mcs = 0;
     guardInterval = 3.2;
     heLTFType = 4;
+    oversamplingFactor = 5;
 
     cfgSU = wlanHESUConfig( ...
         'ChannelBandwidth', channelBandwidth, ...
@@ -43,16 +44,23 @@ function [txSUWaveform, txExtSUWaveform, info] = ...
     end
 
     psdu = randi([0, 1], psduLengthSU * 8, 1, 'int8');
-    txSUWaveform = wlanWaveformGenerator(psdu, cfgSU);
-    txExtSUWaveform = wlanWaveformGenerator(psdu, cfgExtSU);
+    txSUWaveform = wlanWaveformGenerator( ...
+        psdu, cfgSU, 'OversamplingFactor', oversamplingFactor);
+    txExtSUWaveform = wlanWaveformGenerator( ...
+        psdu, cfgExtSU, 'OversamplingFactor', oversamplingFactor);
 
-    sampleRate = wlanSampleRate(cfgExtSU);
-    ofdmInfo = wlanHEOFDMInfo('HE-Data', cfgExtSU);
+    sampleRate = wlanSampleRate( ...
+        cfgExtSU, 'OversamplingFactor', oversamplingFactor);
+    ofdmInfo = wlanHEOFDMInfo( ...
+        'HE-Data', cfgExtSU, ...
+        'OversamplingFactor', oversamplingFactor);
     fftLength = ofdmInfo.FFTLength;
     rbw = sampleRate / fftLength;
 
-    indicesSU = wlanFieldIndices(cfgSU);
-    indicesExtSU = wlanFieldIndices(cfgExtSU);
+    indicesSU = wlanFieldIndices( ...
+        cfgSU, 'OversamplingFactor', oversamplingFactor);
+    indicesExtSU = wlanFieldIndices( ...
+        cfgExtSU, 'OversamplingFactor', oversamplingFactor);
     comparisonEnd = min( ...
         double(indicesSU.LLTF(2)), ...
         double(indicesExtSU.LLTF(2)));
@@ -198,7 +206,7 @@ end
 function plotPreamblePowerComparison( ...
         suWaveform, extSUWaveform, sampleRate, comparisonEnd)
 
-    movingAverageLength = 20;
+    movingAverageLength = round(sampleRate * 1e-6);
     time = (0:comparisonEnd - 1) / sampleRate * 1e6;
 
     figure;

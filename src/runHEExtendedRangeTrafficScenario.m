@@ -1,5 +1,6 @@
-function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
-%runWiFi6Scenario Simulate associated AP-to-station Wi-Fi 6 traffic.
+function [widebandIQ, info] = ...
+    runHEExtendedRangeTrafficScenario(outputFilename)
+%runHEExtendedRangeTrafficScenario Generate mixed HE-EXT-SU traffic.
 
     rng('shuffle');
 
@@ -10,19 +11,17 @@ function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
     p.channelBandwidth = 'CBW20';
     p.targetSamples = 10e6;
 
-    p.mcs = 5;
-    p.payloadLength = 1200;
-    p.guardInterval = 0.8;
-    p.heLTFType = 2;
+    p.payloadLength = 1000;
+    p.mcs = 0;
+    p.guardInterval = 3.2;
+    p.heLTFType = 4;
 
     p.sifs = 16e-6;
     p.slotTime = 9e-6;
     p.difs = p.sifs + 2 * p.slotTime;
     p.contentionWindowMinimum = 15;
-    p.minimumFramesPerBurst = 1;
-    p.maximumFramesPerBurst = 4;
-    p.minimumApplicationIdle = 2e-3;
-    p.maximumApplicationIdle = 10e-3;
+    p.minimumIdleMultiplier = 3;
+    p.maximumIdleMultiplier = 8;
 
     p.apAddress = '001122334455';
     p.stationAddress = '66778899AABB';
@@ -34,20 +33,10 @@ function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
     difsSamples = round(p.difs * p.sampleRate);
     slotSamples = round(p.slotTime * p.sampleRate);
 
-    fprintf('\nWi-Fi 6 AP 下行场景\n');
-    fprintf('宽带采样率：%.2f MHz\n', p.sampleRate / 1e6);
-    fprintf('接收机中心频率：%.3f GHz\n', ...
-        p.receiverCenterFrequency / 1e9);
-    fprintf('Wi-Fi 信道：%d（中心频率 %.3f GHz）\n', ...
-        p.channelNumber, p.channelCenterFrequency / 1e9);
-    fprintf('目标样本数：%d\n\n', p.targetSamples);
-
-    widebandIQ = complex( ...
-        zeros(p.targetSamples, 1, 'single'), ...
-        zeros(p.targetSamples, 1, 'single'));
-
-    cfgHE = wlanHESUConfig( ...
+    cfgExtSU = wlanHESUConfig( ...
         'ChannelBandwidth', p.channelBandwidth, ...
+        'ExtendedRange', true, ...
+        'Upper106ToneRU', true, ...
         'NumTransmitAntennas', 1, ...
         'NumSpaceTimeStreams', 1, ...
         'MCS', p.mcs, ...
@@ -60,9 +49,7 @@ function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
         'FrameType', 'ACK', ...
         'Address1', p.apAddress);
     [ackBits, ackLength] = wlanMACFrame( ...
-        cfgAckMAC, ...
-        'OutputFormat', 'bits');
-
+        cfgAckMAC, 'OutputFormat', 'bits');
     cfgAckPHY = wlanNonHTConfig( ...
         'Modulation', 'OFDM', ...
         'ChannelBandwidth', p.channelBandwidth, ...
@@ -71,51 +58,38 @@ function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
     ackIQ = generateFrameIQ( ...
         ackBits, cfgAckPHY, p.sampleRate, frequencyOffset);
 
+    widebandIQ = complex( ...
+        zeros(p.targetSamples, 1, 'single'), ...
+        zeros(p.targetSamples, 1, 'single'));
+
     minimumExchangeSpacing = difsSamples + sifsSamples + 2;
     maximumEvents = ceil(p.targetSamples / minimumExchangeSpacing);
-    eventStartSamples = zeros(maximumEvents, 1);
     dataStartSamples = zeros(maximumEvents, 1);
     dataEndSamples = zeros(maximumEvents, 1);
     ackStartSamples = zeros(maximumEvents, 1);
     ackEndSamples = zeros(maximumEvents, 1);
     backoffSlotsHistory = zeros(maximumEvents, 1);
-    sequenceNumbers = zeros(maximumEvents, 1);
-    frameLengths = zeros(maximumEvents, 1);
-    burstIDs = zeros(maximumEvents, 1);
     applicationIdleAfterSamples = zeros(maximumEvents, 1);
+    frameLengths = zeros(maximumEvents, 1);
 
     eventCount = 0;
     currentSample = 1;
-    burstID = 0;
-    framesRemainingInBurst = 0;
 
     while true
-        if framesRemainingInBurst == 0
-            burstID = burstID + 1;
-            framesRemainingInBurst = randi([ ...
-                p.minimumFramesPerBurst, p.maximumFramesPerBurst]);
-        end
-
         sequenceNumber = mod(eventCount, 4096);
         payload = randi([0, 255], 1, p.payloadLength, 'uint8');
-
         cfgDataMAC = wlanMACFrameConfig( ...
             'FrameType', 'QoS Data', ...
-            'FrameFormat', 'HE-SU', ...
+            'FrameFormat', 'HE-EXT-SU', ...
             'Address1', p.stationAddress, ...
             'Address2', p.apAddress, ...
             'Address3', p.bssid, ...
             'SequenceNumber', sequenceNumber);
-
         [dataBits, frameLength] = wlanMACFrame( ...
-            payload, ...
-            cfgDataMAC, ...
-            cfgHE, ...
-            'OutputFormat', 'bits');
-        cfgHE.APEPLength = frameLength;
-
+            payload, cfgDataMAC, cfgExtSU, 'OutputFormat', 'bits');
+        cfgExtSU.APEPLength = frameLength;
         dataIQ = generateFrameIQ( ...
-            dataBits, cfgHE, p.sampleRate, frequencyOffset);
+            dataBits, cfgExtSU, p.sampleRate, frequencyOffset);
 
         backoffSlots = randi([0, p.contentionWindowMinimum]);
         dataStart = currentSample + difsSamples + ...
@@ -129,112 +103,80 @@ function [widebandIQ, info] = runWiFi6Scenario(outputFilename)
         end
 
         eventCount = eventCount + 1;
-
-        if eventCount > maximumEvents
-            error( ...
-                'runWiFi6Scenario:EventCapacity', ...
-                'Event preallocation is too small.');
-        end
-
         widebandIQ(dataStart:dataEnd) = dataIQ;
         widebandIQ(ackStart:ackEnd) = ackIQ;
 
-        eventStartSamples(eventCount) = currentSample;
         dataStartSamples(eventCount) = dataStart;
         dataEndSamples(eventCount) = dataEnd;
         ackStartSamples(eventCount) = ackStart;
         ackEndSamples(eventCount) = ackEnd;
         backoffSlotsHistory(eventCount) = backoffSlots;
-        sequenceNumbers(eventCount) = sequenceNumber;
         frameLengths(eventCount) = frameLength;
-        burstIDs(eventCount) = burstID;
 
-        fprintf([ ...
-            '交换 %3d：退避 %2d 时隙，HE-SU %.3f~%.3f ms，' ...
-            'ACK %.3f~%.3f ms\n'], ...
-            eventCount, ...
-            backoffSlots, ...
-            (dataStart - 1) / p.sampleRate * 1e3, ...
-            (dataEnd - 1) / p.sampleRate * 1e3, ...
-            (ackStart - 1) / p.sampleRate * 1e3, ...
-            (ackEnd - 1) / p.sampleRate * 1e3);
-
-        framesRemainingInBurst = framesRemainingInBurst - 1;
-        if framesRemainingInBurst == 0
-            applicationIdleSamples = randi([ ...
-                round(p.minimumApplicationIdle * p.sampleRate), ...
-                round(p.maximumApplicationIdle * p.sampleRate)]);
-            applicationIdleAfterSamples(eventCount) = ...
-                applicationIdleSamples;
-            currentSample = ackEnd + 1 + applicationIdleSamples;
-        else
-            currentSample = ackEnd + 1;
-        end
+        transmittedSamples = numel(dataIQ) + numel(ackIQ);
+        idleMultiplier = randi([ ...
+            p.minimumIdleMultiplier, p.maximumIdleMultiplier]);
+        applicationIdleSamples = transmittedSamples * idleMultiplier;
+        applicationIdleAfterSamples(eventCount) = ...
+            applicationIdleSamples;
+        currentSample = ackEnd + 1 + applicationIdleSamples;
     end
 
-    info.ScenarioType = 'apDownlink';
-    info.ScenarioTitle = 'Wi-Fi 6 AP 下行数据场景';
+    if eventCount == 0
+        error('runHEExtendedRangeTrafficScenario:NoEvents', ...
+            'No HE-EXT-SU exchange fits in the requested capture.');
+    end
+
+    info.ScenarioType = 'heExtendedRangeSUTraffic';
+    info.ScenarioTitle = 'Wi-Fi 6 HE-EXT-SU daily mixed traffic';
     info.SampleRate = p.sampleRate;
     info.TargetSamples = p.targetSamples;
     info.ReceiverCenterFrequency = p.receiverCenterFrequency;
     info.ChannelNumber = p.channelNumber;
     info.ChannelCenterFrequency = p.channelCenterFrequency;
     info.ChannelBandwidth = p.channelBandwidth;
-    info.MCS = p.mcs;
-    info.PayloadLength = p.payloadLength;
-    info.GuardInterval = p.guardInterval;
-    info.HELTFType = p.heLTFType;
+    info.TrafficModel = 'dailyMixedProportionalIdle';
+    info.ApplicationIdleMultiplierRange = [ ...
+        p.minimumIdleMultiplier, p.maximumIdleMultiplier];
     info.DataFrameType = 'QoS Data';
-    info.DataFrameFormat = 'HE-SU';
+    info.DataFrameFormat = 'HE-EXT-SU';
     info.AckFrameType = 'ACK';
     info.AckFrameFormat = 'Non-HT';
-    info.APAddress = p.apAddress;
-    info.StationAddress = p.stationAddress;
-    info.ContentionWindowMinimum = p.contentionWindowMinimum;
-    info.TrafficModel = 'dailyMixedBursts';
-    info.FramesPerBurstRange = [ ...
-        p.minimumFramesPerBurst, p.maximumFramesPerBurst];
-    info.ApplicationIdleRangeSeconds = [ ...
-        p.minimumApplicationIdle, p.maximumApplicationIdle];
+    info.PayloadLength = p.payloadLength;
+    info.MCS = p.mcs;
+    info.GuardInterval = p.guardInterval;
+    info.HELTFType = p.heLTFType;
+    info.Upper106ToneRU = true;
     info.SIFSSamples = sifsSamples;
     info.DIFSSamples = difsSamples;
     info.SlotSamples = slotSamples;
+    info.ContentionWindowMinimum = p.contentionWindowMinimum;
     info.EventCount = eventCount;
-    info.EventStartSamples = eventStartSamples(1:eventCount);
     info.DataStartSamples = dataStartSamples(1:eventCount);
     info.DataEndSamples = dataEndSamples(1:eventCount);
     info.AckStartSamples = ackStartSamples(1:eventCount);
     info.AckEndSamples = ackEndSamples(1:eventCount);
     info.BackoffSlots = backoffSlotsHistory(1:eventCount);
-    info.SequenceNumbers = sequenceNumbers(1:eventCount);
-    info.FrameLengths = frameLengths(1:eventCount);
-    info.BurstIDs = burstIDs(1:eventCount);
     info.ApplicationIdleAfterSamples = ...
         applicationIdleAfterSamples(1:eventCount);
+    info.FrameLengths = frameLengths(1:eventCount);
     transmittedSamples = sum( ...
         info.DataEndSamples - info.DataStartSamples + 1) + sum( ...
         info.AckEndSamples - info.AckStartSamples + 1);
     info.TransmissionDutyCycle = transmittedSamples / p.targetSamples;
-
-    windowLength = 2048;
-    overlapLength = windowLength / 2;
-    nfft = 2048;
+    info.Config = cfgExtSU;
 
     plotSpectrogram( ...
-        widebandIQ, ...
-        p.sampleRate, ...
-        p.receiverCenterFrequency, ...
-        windowLength, ...
-        overlapLength, ...
-        nfft, ...
-        info.ScenarioTitle);
+        widebandIQ, p.sampleRate, p.receiverCenterFrequency, ...
+        2048, 1024, 2048, info.ScenarioTitle);
 
     I = real(widebandIQ);
     Q = imag(widebandIQ);
     save(outputFilename, 'I', 'Q', '-v7.3');
 
-    fprintf('\n交换次数：%d\n', eventCount);
-    fprintf('总样本数：%d\n', numel(widebandIQ));
-    fprintf('总时长：%.3f ms\n', numel(widebandIQ) / p.sampleRate * 1e3);
-    fprintf('数据已保存至：%s\n', outputFilename);
+    fprintf('\nHE-EXT-SU continuous traffic\n');
+    fprintf('Exchanges: %d\n', eventCount);
+    fprintf('Transmission duty cycle: %.2f%%\n', ...
+        100 * info.TransmissionDutyCycle);
+    fprintf('Data saved to: %s\n', outputFilename);
 end

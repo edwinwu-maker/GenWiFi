@@ -1,24 +1,18 @@
 function frameIQ = generateFrameIQ( ...
         frameBits, phyConfig, outputSampleRate, frequencyOffset)
-%generateFrameIQ Generate and place a WLAN frame in a wideband IQ channel.
+% 生成一个 WLAN PPDU
+% WLAN PPDU 是 Wi‑Fi 在物理层实际发送的一整个无线数据包
+
+    nativeSampleRate = wlanSampleRate(phyConfig);
+    oversamplingFactor = outputSampleRate / nativeSampleRate;
 
     basebandIQ = wlanWaveformGenerator( ...
         frameBits, ...
         phyConfig, ...
-        'WindowTransitionTime', 1e-7);
+        'WindowTransitionTime', 1e-7, ...
+        'OversamplingFactor', oversamplingFactor);
 
-    nativeSampleRate = wlanSampleRate(phyConfig);
-
-    if nativeSampleRate ~= outputSampleRate
-        [resampleNumerator, resampleDenominator] = rat( ...
-            outputSampleRate / nativeSampleRate);
-        basebandIQ = resample( ...
-            basebandIQ, ...
-            resampleNumerator, ...
-            resampleDenominator);
-    end
-
-    basebandIQ = single(basebandIQ(:, 1));
+    basebandIQ = single(basebandIQ);
     sampleIndex = single((0:numel(basebandIQ) - 1).');
     phaseIncrement = single(2 * pi * frequencyOffset / outputSampleRate);
     frequencyShift = exp(1j * phaseIncrement * sampleIndex);

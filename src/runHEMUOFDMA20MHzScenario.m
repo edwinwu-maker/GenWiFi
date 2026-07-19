@@ -26,6 +26,9 @@ function [widebandIQ, info] = ...
     p.slotTime = 9e-6;
     p.difs = p.sifs + 2 * p.slotTime;
     p.contentionWindowMinimum = 15;
+    p.minimumIdleMultiplier = 3;
+    p.maximumIdleMultiplier = 8;
+    p.apAddress = '001122334455';
 
     allocationByUserCount = [96, 128, 56, 15, 7, 3, 1, 0];
     p.allocationIndex = allocationByUserCount(userCount - 1);
@@ -36,6 +39,7 @@ function [widebandIQ, info] = ...
 
     frequencyOffset = ...
         p.channelCenterFrequency - p.receiverCenterFrequency;
+    sifsSamples = round(p.sifs * p.sampleRate);
     difsSamples = round(p.difs * p.sampleRate);
     slotSamples = round(p.slotTime * p.sampleRate);
 
@@ -63,6 +67,26 @@ function [widebandIQ, info] = ...
 
     psduLengths = getPSDULength(cfgMU);
 
+    blockAckIQ = cell(1, userCount);
+    stationAddresses = cell(1, userCount);
+    for userIdx = 1:userCount
+        stationAddresses{userIdx} = sprintf('66778899AA%02X', userIdx);
+        cfgBlockAckMAC = wlanMACFrameConfig( ...
+            'FrameType', 'Block Ack', ...
+            'Address1', p.apAddress, ...
+            'Address2', stationAddresses{userIdx});
+        [blockAckBits, blockAckLength] = wlanMACFrame( ...
+            cfgBlockAckMAC, 'OutputFormat', 'bits');
+        cfgBlockAckPHY = wlanNonHTConfig( ...
+            'Modulation', 'OFDM', ...
+            'ChannelBandwidth', p.channelBandwidth, ...
+            'MCS', 0, ...
+            'PSDULength', blockAckLength);
+        blockAckIQ{userIdx} = generateFrameIQ( ...
+            blockAckBits, cfgBlockAckPHY, ...
+            p.sampleRate, frequencyOffset);
+    end
+
     fprintf('\nWi-Fi 6 HE-MU OFDMA 下行场景\n');
     fprintf('宽带采样率：%.2f MHz\n', p.sampleRate / 1e6);
     fprintf('接收机中心频率：%.3f GHz\n', ...
@@ -85,6 +109,9 @@ function [widebandIQ, info] = ...
     burstStartSamples = zeros(maximumEvents, 1);
     burstEndSamples = zeros(maximumEvents, 1);
     backoffSlotsHistory = zeros(maximumEvents, 1);
+    blockAckStartSamples = zeros(maximumEvents, userCount);
+    blockAckEndSamples = zeros(maximumEvents, userCount);
+    applicationIdleAfterSamples = zeros(maximumEvents, 1);
 
     eventCount = 0;
     currentSample = 1;
@@ -105,7 +132,18 @@ function [widebandIQ, info] = ...
             backoffSlots * slotSamples;
         burstEnd = burstStart + numel(burstIQ) - 1;
 
-        if burstEnd > p.targetSamples
+        nextResponseStart = burstEnd + 1 + sifsSamples;
+        tentativeBlockAckStarts = zeros(1, userCount);
+        tentativeBlockAckEnds = zeros(1, userCount);
+        for userIdx = 1:userCount
+            tentativeBlockAckStarts(userIdx) = nextResponseStart;
+            tentativeBlockAckEnds(userIdx) = nextResponseStart + ...
+                numel(blockAckIQ{userIdx}) - 1;
+            nextResponseStart = tentativeBlockAckEnds(userIdx) + ...
+                1 + sifsSamples;
+        end
+
+        if tentativeBlockAckEnds(end) > p.targetSamples
             break;
         end
 
@@ -116,9 +154,16 @@ function [widebandIQ, info] = ...
         end
 
         widebandIQ(burstStart:burstEnd) = burstIQ;
+        for userIdx = 1:userCount
+            widebandIQ( ...
+                tentativeBlockAckStarts(userIdx): ...
+                tentativeBlockAckEnds(userIdx)) = blockAckIQ{userIdx};
+        end
         burstStartSamples(eventCount) = burstStart;
         burstEndSamples(eventCount) = burstEnd;
         backoffSlotsHistory(eventCount) = backoffSlots;
+        blockAckStartSamples(eventCount, :) = tentativeBlockAckStarts;
+        blockAckEndSamples(eventCount, :) = tentativeBlockAckEnds;
 
         if eventCount == 1
             firstNativeWaveform = wlanWaveformGenerator( ...
@@ -131,7 +176,15 @@ function [widebandIQ, info] = ...
             (burstStart - 1) / p.sampleRate * 1e3, ...
             (burstEnd - 1) / p.sampleRate * 1e3);
 
-        currentSample = burstEnd + 1;
+        transmittedSamples = numel(burstIQ) + sum(cellfun( ...
+            @numel, blockAckIQ));
+        idleMultiplier = randi([ ...
+            p.minimumIdleMultiplier, p.maximumIdleMultiplier]);
+        applicationIdleSamples = transmittedSamples * idleMultiplier;
+        applicationIdleAfterSamples(eventCount) = ...
+            applicationIdleSamples;
+        currentSample = tentativeBlockAckEnds(end) + 1 + ...
+            applicationIdleSamples;
     end
 
     if eventCount == 0
@@ -153,6 +206,8 @@ function [widebandIQ, info] = ...
     info.ChannelBandwidth = p.channelBandwidth;
     info.DataFrameFormat = 'HE-MU';
     info.DataSource = 'Random PSDU bits';
+    info.TrafficModel = 'dailyMixedProportionalIdle';
+    info.AcknowledgmentModel = 'Simplified serial Non-HT Block Ack';
     info.UserCount = userCount;
     info.AllocationIndex = p.allocationIndex;
     info.RUInfo = allocationInfo;
@@ -164,12 +219,26 @@ function [widebandIQ, info] = ...
     info.HELTFType = p.heLTFType;
     info.SIGBMCS = p.sigBMCS;
     info.ContentionWindowMinimum = p.contentionWindowMinimum;
+    info.ApplicationIdleMultiplierRange = [ ...
+        p.minimumIdleMultiplier, p.maximumIdleMultiplier];
+    info.SIFSSamples = sifsSamples;
     info.DIFSSamples = difsSamples;
     info.SlotSamples = slotSamples;
     info.EventCount = eventCount;
     info.BurstStartSamples = burstStartSamples(1:eventCount);
     info.BurstEndSamples = burstEndSamples(1:eventCount);
     info.BackoffSlots = backoffSlotsHistory(1:eventCount);
+    info.BlockAckStartSamples = ...
+        blockAckStartSamples(1:eventCount, :);
+    info.BlockAckEndSamples = ...
+        blockAckEndSamples(1:eventCount, :);
+    info.ApplicationIdleAfterSamples = ...
+        applicationIdleAfterSamples(1:eventCount);
+    info.StationAddresses = stationAddresses;
+    transmittedSamples = sum( ...
+        info.BurstEndSamples - info.BurstStartSamples + 1, 'all') + ...
+        sum(info.BlockAckEndSamples - info.BlockAckStartSamples + 1, 'all');
+    info.TransmissionDutyCycle = transmittedSamples / p.targetSamples;
     info.RUFrequenciesMHz = ruFrequenciesMHz;
     info.RUMeanPowerDB = ruMeanPowerDB;
     info.Config = cfgMU;

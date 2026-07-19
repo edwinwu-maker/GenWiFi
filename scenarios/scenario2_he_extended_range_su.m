@@ -9,8 +9,18 @@ close all;
 scenarioDirectory = fileparts(mfilename('fullpath'));
 projectDirectory = fileparts(scenarioDirectory);
 sourceDirectory = fullfile(projectDirectory, 'src');
+outputDirectory = fullfile(projectDirectory, 'output');
 
 addpath(sourceDirectory);
 
-[txSUWaveform, txExtSUWaveform, scenarioInfo] = ...
+[txSUWaveform, txExtSUWaveform, comparisonInfo] = ...
     runHEExtendedRangeScenario();
+
+if ~isfolder(outputDirectory)
+    mkdir(outputDirectory);
+end
+
+[widebandIQ, scenarioInfo] = runHEExtendedRangeTrafficScenario( ...
+    fullfile(outputDirectory, ...
+    'wifi6_scenario2_he_extended_range_su.mat'));
+scenarioInfo.Comparison = comparisonInfo;
